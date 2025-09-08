@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: mvp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: 024190746294.dkr.ecr.us-east-1.amazonaws.com/resident-backend:v4
+          ports:
+            - containerPort: 3001
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3001"
+            - name: FRONTEND_URL
+              value: "http://localhost:3000"
+            - name: AWS_REGION
+              value: "<your-aws-region>"
+            - name: AWS_PROFILE
+              value: "<your-aws-profile>"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DATABASE_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: JWT_SECRET
+          command: ["/bin/sh","-c"]
+          args:
+            - "npx prisma db push && npm run start:prod"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: mvp
+spec:
+  type: LoadBalancer
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001

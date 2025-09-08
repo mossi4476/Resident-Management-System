@@ -1,5 +1,17 @@
 node_modules
 npm-debug.log
+Dockerfile*
+.dockerignore
+dist
+.git
+.gitignore
+coverage
+tmp
+*.md
+.vscode
+**/*.tsbuildinfo
+node_modules
+npm-debug.log
 dist
 .env
 .env.local

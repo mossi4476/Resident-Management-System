@@ -1,57 +1,38 @@
-# Backend Dockerfile
-FROM node:18-alpine AS base
+FROM node:20-alpine AS deps
 
-# Install dependencies only when needed
-FROM base AS deps
-RUN apk add --no-cache libc6-compat
-WORKDIR /app
+WORKDIR /usr/src/app
 
-# Copy package files
+RUN apk add --no-cache openssl
+
 COPY package*.json ./
-COPY prisma ./prisma/
-
-# Install dependencies (no package-lock.json present)
 RUN npm install
 
-# Rebuild the source code only when needed
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+FROM node:20-alpine AS builder
+WORKDIR /usr/src/app
+RUN apk add --no-cache openssl
+COPY --from=deps /usr/src/app/node_modules ./node_modules
 COPY . .
-
-# Generate Prisma client
-RUN npx prisma generate
-
-# Build the application
 RUN npm run build
 
-# Production image
-FROM base AS runner
-WORKDIR /app
+# Production runtime
+FROM node:20-alpine AS runner
+WORKDIR /usr/src/app
 
-# Create non-root user
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nestjs
+ENV NODE_ENV=production
+ENV PORT=3001
 
-# Copy built application
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/prisma ./prisma
+# Ensure OpenSSL is available for Prisma at runtime
+RUN apk add --no-cache openssl
 
-# Ensure curl exists for healthcheck
-RUN apk add --no-cache curl
+# Copy only what's needed to run
+COPY --from=deps /usr/src/app/node_modules ./node_modules
+COPY --from=builder /usr/src/app/dist ./dist
+COPY --from=builder /usr/src/app/package*.json ./
+COPY --from=builder /usr/src/app/prisma ./prisma
 
-# Change ownership
-RUN chown -R nestjs:nodejs /app
-USER nestjs
-
-# Expose port
 EXPOSE 3001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3001/health || exit 1
+CMD ["sh", "-lc", "node dist/main || node dist/src/main"]
 
-# Start the application directly (avoids npm script resolution issues)
-CMD ["node", "dist/main.js"]
+
+
