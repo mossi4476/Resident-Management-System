@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: development
-      DATABASE_URL: mysql://resident_user:resident_password@mysql:3306/resident_management
+      DATABASE_URL: mysql://dung:tiendungpro123@cdr.cc3cumaiaj7q.us-east-1.rds.amazonaws.com:3306/resident_management
       JWT_SECRET: your-super-secret-jwt-key-here
       JWT_EXPIRES_IN: 7d
       PORT: 3001

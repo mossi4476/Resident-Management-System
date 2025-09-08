@@ -10,8 +10,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
-# Install dependencies
-RUN npm ci --only=production
+# Install dependencies (no package-lock.json present)
+RUN npm install
 
 # Rebuild the source code only when needed
 FROM base AS builder
@@ -39,6 +39,9 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/prisma ./prisma
 
+# Ensure curl exists for healthcheck
+RUN apk add --no-cache curl
+
 # Change ownership
 RUN chown -R nestjs:nodejs /app
 USER nestjs
@@ -50,5 +53,5 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3001/health || exit 1
 
-# Start the application
-CMD ["npm", "run", "start:prod"]
+# Start the application directly (avoids npm script resolution issues)
+CMD ["node", "dist/main.js"]

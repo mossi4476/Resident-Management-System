@@ -17,14 +17,15 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: resident-frontend:latest
+        image: 024190746294.dkr.ecr.us-east-1.amazonaws.com/resident-frontend:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
         env:
         - name: NODE_ENV
           value: "production"
         - name: NEXT_PUBLIC_API_URL
-          value: "http://backend-service:3001"
+          value: "http://a5d943a6bde3f432ebaa8dcc85db7053-5079892.us-east-1.elb.amazonaws.com:3001"
         resources:
           requests:
             memory: "128Mi"
