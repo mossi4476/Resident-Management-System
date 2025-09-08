@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: resident-config
+  namespace: resident-management
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+  JWT_EXPIRES_IN: "7d"
+  # Database configuration will be in secret
+  # DATABASE_URL: "mysql://resident_user:resident_password@mysql-service:3306/resident_management"
