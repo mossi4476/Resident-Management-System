@@ -2,6 +2,68 @@
 
 A modern, full-stack resident management system designed to solve the pain points of managing apartment residents and complaints through a centralized, digital platform.
 
+## Deployed Links
+- **Frontend**: http://a1f10070e69ed4d7782b93a7c480fab6-660662555.us-east-1.elb.amazonaws.com
+- **Backend (API)**: http://aefaaf54067434c7f94efa1f4d9c480d-912660252.us-east-1.elb.amazonaws.com:3001
+- **API Docs (Swagger)**: http://aefaaf54067434c7f94efa1f4d9c480d-912660252.us-east-1.elb.amazonaws.com:3001/api/docs
+
+### Deployment Info
+- **K8s Namespace**: `mvp`
+- **Frontend Image**: `024190746294.dkr.ecr.us-east-1.amazonaws.com/resident-frontend:v5`
+- **Backend Image**: `024190746294.dkr.ecr.us-east-1.amazonaws.com/resident-backend:v4`
+
+### Frontend API Base URL
+- Defined in `frontend/lib/api.ts`: `http://aefaaf54067434c7f94efa1f4d9c480d-912660252.us-east-1.elb.amazonaws.com:3001`
+- Can be overridden via `NEXT_PUBLIC_API_URL` during build/deploy.
+
+## 🏗️ Deployment Infrastructure Solution
+
+- **☁️ Cloud**: AWS (EKS, ELB, ECR, RDS)
+- **🧩 Orchestration**: Kubernetes (EKS) — namespace `mvp`, Deployments + Services (LoadBalancer)
+- **🐳 Images**: Docker images stored in Amazon ECR
+  - Frontend: `024190746294.dkr.ecr.us-east-1.amazonaws.com/resident-frontend:v5`
+  - Backend: `024190746294.dkr.ecr.us-east-1.amazonaws.com/resident-backend:v4`
+- **🗄️ Database**: AWS RDS MySQL [[memory:8439563]]
+- **🔐 Secrets**: Kubernetes Secrets (`k8s/backend-secret.yaml`) for `DATABASE_URL`, `JWT_SECRET`
+- **🌐 Ingress/Networking**: Service type `LoadBalancer` exposes public ELB for frontend and backend
+- **📦 Artifacts**: Multi-stage Docker builds for small runtime images
+- **🚀 Release**: `kubectl set image` + rolling updates; `kubectl rollout status` for health
+- **📈 Observability**: ELB health checks; app logs via `kubectl logs`
+
+### 📜 Kubernetes Resources
+- `k8s/frontend.yaml`
+  - Deployment: `resident-frontend` container on port 3000
+  - Service: `LoadBalancer` → public URL for the app
+- `k8s/backend.yaml`
+  - Deployment: `resident-backend` container on port 3001
+  - Env: `FRONTEND_URL` (CORS), `DATABASE_URL`, `JWT_SECRET`
+  - Service: `LoadBalancer` → public API and Swagger
+
+### 🔄 Deployment Flow
+1. 🐳 Build and push images to ECR
+   - Frontend: `docker build -t resident-frontend ./frontend`
+   - `docker tag resident-frontend:latest <ECR>/resident-frontend:v5`
+   - `docker push <ECR>/resident-frontend:v5`
+2. 🚢 Update deployment images
+   - `kubectl -n mvp set image deploy/frontend frontend=<ECR>/resident-frontend:v5`
+   - `kubectl -n mvp set image deploy/backend backend=<ECR>/resident-backend:v4`
+3. 🔁 Rollout and verify
+   - `kubectl -n mvp rollout status deploy/frontend`
+   - `kubectl -n mvp rollout status deploy/backend`
+4. 🌍 Get public endpoints
+   - `kubectl -n mvp get svc frontend -o wide`
+   - `kubectl -n mvp get svc backend -o wide`
+
+### ⚙️ Runtime Configuration
+- **CORS/Origins**: Backend `FRONTEND_URL` must match the frontend ELB URL
+- **Frontend API Base**: `frontend/lib/api.ts` points to backend ELB on port 3001
+- **Env Override**: `NEXT_PUBLIC_API_URL` can override API base at build-time
+
+### 🔒 Security Notes
+- Store secrets only in `Secrets` (never commit to git)
+- Use unique `JWT_SECRET` per environment
+- Restrict RDS access to EKS nodes’ security group
+
 ## 🎯 Problem Statement
 
 The management board of ABC Apartment currently manages resident information and complaints via Zalo and Excel files, leading to:
