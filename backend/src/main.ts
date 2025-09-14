@@ -5,12 +5,31 @@ import { AppModule } from './app.module';
 import helmet from 'helmet';
 
 async function bootstrap() {
+  // Set default Redis URL for local development if not provided
+  if (!process.env.REDIS_URL && process.env.NODE_ENV !== 'production') {
+    process.env.REDIS_URL = 'redis://localhost:6379';
+  }
+  
+  // Set default Kafka broker for local development if not provided
+  if (!process.env.KAFKA_BROKER && process.env.NODE_ENV !== 'production') {
+    process.env.KAFKA_BROKER = 'localhost:9092';
+  }
+  
+  // For development without Docker, disable Redis and Kafka temporarily
+  if (process.env.NODE_ENV === 'development') {
+    console.log('🔧 Development mode: Redis and Kafka will be optional');
+  }
+  
   const app = await NestFactory.create(AppModule);
 
   // Security middleware
   app.use(helmet());
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: [
+      'http://localhost:3000',  // Frontend port
+      'http://localhost:3002',  // Alternative frontend port
+      process.env.FRONTEND_URL || 'http://localhost:3000'
+    ],
     credentials: true,
   });
 

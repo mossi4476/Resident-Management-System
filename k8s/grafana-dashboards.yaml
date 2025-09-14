@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: resident-management
+  labels:
+    grafana_dashboard: "1"
+data:
+  kubernetes-cluster-monitoring.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Kubernetes Cluster Monitoring",
+        "tags": ["kubernetes"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Cluster Overview",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "count(up{job=\"kubernetes-nodes\"})",
+                "legendFormat": "Nodes"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "vis": false
+                  }
+                }
+              }
+            }
+          },
+          {
+            "id": 2,
+            "title": "Pod Status",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "count(kube_pod_info)",
+                "legendFormat": "Total Pods"
+              },
+              {
+                "expr": "count(kube_pod_status_phase{phase=\"Running\"})",
+                "legendFormat": "Running"
+              },
+              {
+                "expr": "count(kube_pod_status_phase{phase=\"Pending\"})",
+                "legendFormat": "Pending"
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "title": "CPU Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(container_cpu_usage_seconds_total[5m])",
+                "legendFormat": "{{pod}}"
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "title": "Memory Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "container_memory_usage_bytes",
+                "legendFormat": "{{pod}}"
+              }
+            ]
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }
+  resident-management-app.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Resident Management App",
+        "tags": ["resident-management", "application"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "HTTP Requests",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(http_requests_total[5m])",
+                "legendFormat": "{{method}} {{status}}"
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "title": "Response Time",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+                "legendFormat": "95th percentile"
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "title": "Error Rate",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "rate(http_requests_total{status=~\"5..\"}[5m]) / rate(http_requests_total[5m]) * 100",
+                "legendFormat": "Error Rate %"
+              }
+            ]
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }

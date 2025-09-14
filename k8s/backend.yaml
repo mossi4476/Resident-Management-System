@@ -39,6 +39,10 @@ spec:
                 secretKeyRef:
                   name: backend-secrets
                   key: JWT_SECRET
+            - name: REDIS_URL
+              value: "redis://redis-service:6379"
+            - name: KAFKA_BROKER
+              value: "kafka-service:9092"
           command: ["/bin/sh","-c"]
           args:
             - "npx prisma db push && npm run start:prod"

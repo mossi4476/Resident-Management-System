@@ -1,10 +1,16 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
+import { KafkaService } from '../kafka/kafka.service';
 import { CreateComplaintDto, UpdateComplaintDto } from './dto/complaint.dto';
 
 @Injectable()
 export class ComplaintsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redisService: RedisService,
+    private kafkaService: KafkaService,
+  ) {}
 
   async create(createComplaintDto: CreateComplaintDto, userId: string) {
     // Get resident info for the user
@@ -16,7 +22,7 @@ export class ComplaintsService {
       throw new NotFoundException('Resident profile not found');
     }
 
-    return this.prisma.complaint.create({
+    const complaint = await this.prisma.complaint.create({
       data: {
         title: createComplaintDto.title,
         description: createComplaintDto.description,
@@ -58,6 +64,26 @@ export class ComplaintsService {
         },
       },
     });
+
+    // Cache the complaint in Redis
+    await this.redisService.cacheComplaint(complaint.id, complaint);
+
+    // Publish Kafka event
+    await this.kafkaService.publishComplaintCreated({
+      id: complaint.id,
+      title: complaint.title,
+      description: complaint.description,
+      category: complaint.category,
+      priority: complaint.priority,
+      status: complaint.status,
+      userId: complaint.authorId,
+      apartment: complaint.apartment,
+      building: complaint.building,
+      createdAt: complaint.createdAt.toISOString(),
+      updatedAt: complaint.updatedAt.toISOString(),
+    });
+
+    return complaint;
   }
 
   async findAll(filters?: {

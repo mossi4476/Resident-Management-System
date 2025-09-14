@@ -6,6 +6,7 @@ import { complaintsApi } from '@/lib/api'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import EditComplaintForm from './EditComplaintForm'
+import { useWebSocket } from '@/hooks/useWebSocket'
 
 interface ComplaintsListProps {
   complaints: any[]
@@ -18,6 +19,8 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
   const [selectedComplaint, setSelectedComplaint] = useState<any>(null)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [complaintToDelete, setComplaintToDelete] = useState<any>(null)
+  const [localComplaints, setLocalComplaints] = useState(complaints)
+  const { onComplaintCreated, onComplaintUpdated, onComplaintDeleted, isConnected } = useWebSocket()
   const [showCommentModal, setShowCommentModal] = useState(false)
   const [commentText, setCommentText] = useState('')
   const [showEditModal, setShowEditModal] = useState(false)
@@ -88,7 +91,7 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
 
   // Filter and search logic
   const filteredComplaints = useMemo(() => {
-    return complaints.filter(complaint => {
+    return localComplaints.filter(complaint => {
       const matchesSearch = complaint.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            complaint.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            complaint.apartment.toLowerCase().includes(searchTerm.toLowerCase())
@@ -111,6 +114,59 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
   useEffect(() => {
     setCurrentPage(1)
   }, [searchTerm, statusFilter, priorityFilter, categoryFilter])
+
+  // Update local complaints when props change
+  useEffect(() => {
+    setLocalComplaints(complaints)
+  }, [complaints])
+
+  // WebSocket event handlers
+  useEffect(() => {
+    console.log('🔌 ComplaintsList: Setting up WebSocket event handlers...');
+    console.log('🔌 ComplaintsList: isConnected =', isConnected);
+    
+    const unsubscribeCreated = onComplaintCreated((data) => {
+      console.log('📥 Received complaint.created event:', data)
+      toast.success('New complaint created!', {
+        duration: 3000,
+        icon: '📝',
+      })
+      // Refresh the complaints list
+      onUpdate()
+    })
+
+    const unsubscribeUpdated = onComplaintUpdated((data) => {
+      console.log('📥 Received complaint.updated event:', data)
+      toast.success('Complaint updated!', {
+        duration: 3000,
+        icon: '✏️',
+      })
+      // Update local state
+      setLocalComplaints(prev => 
+        prev.map(complaint => 
+          complaint.id === data.data.id ? { ...complaint, ...data.data } : complaint
+        )
+      )
+    })
+
+    const unsubscribeDeleted = onComplaintDeleted((data) => {
+      console.log('📥 Received complaint.deleted event:', data)
+      toast.success('Complaint deleted!', {
+        duration: 3000,
+        icon: '🗑️',
+      })
+      // Remove from local state
+      setLocalComplaints(prev => 
+        prev.filter(complaint => complaint.id !== data.data.id)
+      )
+    })
+
+    return () => {
+      unsubscribeCreated()
+      unsubscribeUpdated()
+      unsubscribeDeleted()
+    }
+  }, [onComplaintCreated, onComplaintUpdated, onComplaintDeleted, onUpdate])
 
   const clearFilters = () => {
     setSearchTerm('')
@@ -142,6 +198,16 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
     <>
       {/* Search and Filter Section */}
       <div className="bg-white p-6 rounded-lg shadow mb-6">
+        {/* WebSocket Status */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <span className="text-sm text-gray-600">
+              {isConnected ? 'Real-time updates connected' : 'Real-time updates disconnected'}
+            </span>
+          </div>
+        </div>
+        
         <div className="flex flex-col lg:flex-row gap-4">
           {/* Search */}
           <div className="flex-1">
