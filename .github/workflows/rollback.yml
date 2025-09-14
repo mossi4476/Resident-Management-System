@@ -1,0 +1,258 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      services:
+        description: 'Services to rollback'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - backend
+          - frontend
+      previous-version:
+        description: 'Version to rollback to (leave empty for automatic detection)'
+        required: false
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 024190746294.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  # Detect previous version
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      backend-version: ${{ steps.version.outputs.backend }}
+      frontend-version: ${{ steps.version.outputs.frontend }}
+      namespace: ${{ steps.env.outputs.namespace }}
+    
+    steps:
+    - name: Set environment namespace
+      id: env
+      run: |
+        if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+          echo "namespace=production" >> $GITHUB_OUTPUT
+        else
+          echo "namespace=staging" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Get current deployments
+      id: current
+      run: |
+        kubectl get deployment backend frontend -n ${{ steps.env.outputs.namespace }} -o json > current-deployments.json
+        cat current-deployments.json
+
+    - name: Detect previous versions
+      id: version
+      run: |
+        if [ -n "${{ github.event.inputs.previous-version }}" ]; then
+          # Use specified version
+          echo "backend=${{ github.event.inputs.previous-version }}" >> $GITHUB_OUTPUT
+          echo "frontend=${{ github.event.inputs.previous-version }}" >> $GITHUB_OUTPUT
+        else
+          # Get previous version from deployment history
+          BACKEND_PREV=$(kubectl rollout history deployment/backend -n ${{ steps.env.outputs.namespace }} --no-headers | head -2 | tail -1 | awk '{print $1}')
+          FRONTEND_PREV=$(kubectl rollout history deployment/frontend -n ${{ steps.env.outputs.namespace }} --no-headers | head -2 | tail -1 | awk '{print $1}')
+          
+          echo "backend=$BACKEND_PREV" >> $GITHUB_OUTPUT
+          echo "frontend=$FRONTEND_PREV" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Display rollback plan
+      run: |
+        echo "🔄 Rollback Plan:"
+        echo "Environment: ${{ github.event.inputs.environment }}"
+        echo "Namespace: ${{ steps.env.outputs.namespace }}"
+        echo "Services: ${{ github.event.inputs.services }}"
+        echo "Backend Version: ${{ steps.version.outputs.backend }}"
+        echo "Frontend Version: ${{ steps.version.outputs.frontend }}"
+
+  # Rollback Backend
+  rollback-backend:
+    needs: detect-version
+    runs-on: ubuntu-latest
+    if: github.event.inputs.services == 'all' || github.event.inputs.services == 'backend'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Create backup of current deployment
+      run: |
+        kubectl get deployment backend -n ${{ needs.detect-version.outputs.namespace }} -o yaml > backend-backup-$(date +%Y%m%d-%H%M%S).yaml
+
+    - name: Rollback Backend deployment
+      run: |
+        if [ "${{ github.event.inputs.previous-version }}" ]; then
+          # Manual rollback to specific version
+          kubectl set image deployment/backend \
+            backend=$ECR_REGISTRY/resident-backend:${{ github.event.inputs.previous-version }} \
+            -n ${{ needs.detect-version.outputs.namespace }}
+        else
+          # Automatic rollback to previous revision
+          kubectl rollout undo deployment/backend -n ${{ needs.detect-version.outputs.namespace }}
+        fi
+
+    - name: Wait for rollback to complete
+      run: |
+        kubectl rollout status deployment/backend -n ${{ needs.detect-version.outputs.namespace }} --timeout=300s
+
+    - name: Verify backend rollback
+      run: |
+        kubectl get deployment backend -n ${{ needs.detect-version.outputs.namespace }}
+        kubectl describe deployment backend -n ${{ needs.detect-version.outputs.namespace }}
+
+  # Rollback Frontend
+  rollback-frontend:
+    needs: detect-version
+    runs-on: ubuntu-latest
+    if: github.event.inputs.services == 'all' || github.event.inputs.services == 'frontend'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Create backup of current deployment
+      run: |
+        kubectl get deployment frontend -n ${{ needs.detect-version.outputs.namespace }} -o yaml > frontend-backup-$(date +%Y%m%d-%H%M%S).yaml
+
+    - name: Rollback Frontend deployment
+      run: |
+        if [ "${{ github.event.inputs.previous-version }}" ]; then
+          # Manual rollback to specific version
+          kubectl set image deployment/frontend \
+            frontend=$ECR_REGISTRY/resident-frontend:${{ github.event.inputs.previous-version }} \
+            -n ${{ needs.detect-version.outputs.namespace }}
+        else
+          # Automatic rollback to previous revision
+          kubectl rollout undo deployment/frontend -n ${{ needs.detect-version.outputs.namespace }}
+        fi
+
+    - name: Wait for rollback to complete
+      run: |
+        kubectl rollout status deployment/frontend -n ${{ needs.detect-version.outputs.namespace }} --timeout=300s
+
+    - name: Verify frontend rollback
+      run: |
+        kubectl get deployment frontend -n ${{ needs.detect-version.outputs.namespace }}
+        kubectl describe deployment frontend -n ${{ needs.detect-version.outputs.namespace }}
+
+  # Post-rollback verification
+  verify-rollback:
+    needs: [rollback-backend, rollback-frontend]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Get service URLs
+      id: urls
+      run: |
+        # Get LoadBalancer URLs
+        BACKEND_URL=$(kubectl get svc backend -n ${{ needs.detect-version.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        FRONTEND_URL=$(kubectl get svc frontend -n ${{ needs.detect-version.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        if [ -z "$BACKEND_URL" ]; then
+          BACKEND_URL=$(kubectl get svc backend -n ${{ needs.detect-version.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        fi
+        
+        if [ -z "$FRONTEND_URL" ]; then
+          FRONTEND_URL=$(kubectl get svc frontend -n ${{ needs.detect-version.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        fi
+        
+        echo "backend-url=http://$BACKEND_URL:3001" >> $GITHUB_OUTPUT
+        echo "frontend-url=http://$FRONTEND_URL:80" >> $GITHUB_OUTPUT
+
+    - name: Run health checks
+      run: |
+        echo "🔍 Running post-rollback health checks..."
+        
+        # Backend health check
+        if [ -n "${{ steps.urls.outputs.backend-url }}" ]; then
+          echo "Testing backend: ${{ steps.urls.outputs.backend-url }}/health"
+          curl -f "${{ steps.urls.outputs.backend-url }}/health" || echo "Backend health check failed"
+        fi
+        
+        # Frontend health check
+        if [ -n "${{ steps.urls.outputs.frontend-url }}" ]; then
+          echo "Testing frontend: ${{ steps.urls.outputs.frontend-url }}"
+          curl -f "${{ steps.urls.outputs.frontend-url }}" || echo "Frontend health check failed"
+        fi
+
+    - name: Display rollback summary
+      run: |
+        echo "## 🔄 Rollback Summary"
+        echo ""
+        echo "**Environment:** ${{ github.event.inputs.environment }}"
+        echo "**Namespace:** ${{ needs.detect-version.outputs.namespace }}"
+        echo "**Services Rolled Back:** ${{ github.event.inputs.services }}"
+        echo ""
+        echo "**Service URLs:**"
+        echo "- Backend: ${{ steps.urls.outputs.backend-url }}"
+        echo "- Frontend: ${{ steps.urls.outputs.frontend-url }}"
+        echo ""
+        echo "**Rollback Status:**"
+        echo "- Backend: ${{ needs.rollback-backend.result }}"
+        echo "- Frontend: ${{ needs.rollback-frontend.result }}"
+        echo ""
+        echo "**Next Steps:**"
+        echo "1. Monitor application logs for any issues"
+        echo "2. Run comprehensive tests"
+        echo "3. Investigate the root cause of the original issue"

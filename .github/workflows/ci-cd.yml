@@ -1,0 +1,245 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 024190746294.dkr.ecr.us-east-1.amazonaws.com
+  BACKEND_IMAGE: resident-backend
+  FRONTEND_IMAGE: resident-frontend
+
+jobs:
+  # Backend CI
+  backend-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Run tests
+      run: npm run test:cov
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/test
+        JWT_SECRET: test-secret
+
+    - name: Build application
+      run: npm run build
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: backend-test-results
+        path: backend/coverage/
+
+  # Frontend CI
+  frontend-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Build application
+      run: npm run build
+      env:
+        NEXT_PUBLIC_API_URL: http://localhost:3001
+
+  # Build and Push Docker Images
+  build-and-push:
+    needs: [backend-ci, frontend-ci]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set image tags
+      id: set-tags
+      run: |
+        if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          echo "TAG=latest" >> $GITHUB_OUTPUT
+          echo "VERSION=v$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+        else
+          echo "TAG=develop" >> $GITHUB_OUTPUT
+          echo "VERSION=dev-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+        fi
+
+    # Build and push Backend
+    - name: Build Backend Docker image
+      run: |
+        docker build -t $ECR_REGISTRY/$BACKEND_IMAGE:${{ steps.set-tags.outputs.TAG }} \
+                     -t $ECR_REGISTRY/$BACKEND_IMAGE:${{ steps.set-tags.outputs.VERSION }} \
+                     ./backend
+
+    - name: Push Backend Docker image
+      run: |
+        docker push $ECR_REGISTRY/$BACKEND_IMAGE:${{ steps.set-tags.outputs.TAG }}
+        docker push $ECR_REGISTRY/$BACKEND_IMAGE:${{ steps.set-tags.outputs.VERSION }}
+
+    # Build and push Frontend
+    - name: Build Frontend Docker image
+      run: |
+        docker build -t $ECR_REGISTRY/$FRONTEND_IMAGE:${{ steps.set-tags.outputs.TAG }} \
+                     -t $ECR_REGISTRY/$FRONTEND_IMAGE:${{ steps.set-tags.outputs.VERSION }} \
+                     --build-arg NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }} \
+                     ./frontend
+
+    - name: Push Frontend Docker image
+      run: |
+        docker push $ECR_REGISTRY/$FRONTEND_IMAGE:${{ steps.set-tags.outputs.TAG }}
+        docker push $ECR_REGISTRY/$FRONTEND_IMAGE:${{ steps.set-tags.outputs.VERSION }}
+
+    - name: Save image info
+      run: |
+        echo "BACKEND_TAG=${{ steps.set-tags.outputs.VERSION }}" >> $GITHUB_OUTPUT
+        echo "FRONTEND_TAG=${{ steps.set-tags.outputs.VERSION }}" >> $GITHUB_OUTPUT
+      id: image-info
+
+  # Deploy to Kubernetes
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Update image tags in manifests
+      run: |
+        # Update backend image tag
+        sed -i "s|image: $ECR_REGISTRY/$BACKEND_IMAGE:.*|image: $ECR_REGISTRY/$BACKEND_IMAGE:${{ needs.build-and-push.outputs.BACKEND_TAG }}|g" k8s/backend.yaml
+        
+        # Update frontend image tag
+        sed -i "s|image: $ECR_REGISTRY/$FRONTEND_IMAGE:.*|image: $ECR_REGISTRY/$FRONTEND_IMAGE:${{ needs.build-and-push.outputs.FRONTEND_TAG }}|g" k8s/frontend.yaml
+
+    - name: Commit updated manifests
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add k8s/backend.yaml k8s/frontend.yaml
+        git commit -m "Update image tags: backend=${{ needs.build-and-push.outputs.BACKEND_TAG }}, frontend=${{ needs.build-and-push.outputs.FRONTEND_TAG }}" || exit 0
+        git push
+
+    - name: Trigger ArgoCD sync
+      run: |
+        # Wait a bit for ArgoCD to detect changes
+        sleep 30
+        
+        # Get ArgoCD admin password
+        ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-secret -o jsonpath="{.data.admin\.password}" | base64 -d)
+        
+        # Login to ArgoCD
+        argocd login argocd-server.argocd.svc.cluster.local:443 --username admin --password $ARGOCD_PASSWORD --insecure
+        
+        # Sync applications
+        argocd app sync resident-backend
+        argocd app sync resident-frontend
+
+  # Security Scanning
+  security-scan:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ needs.build-and-push.outputs.BACKEND_TAG }}'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Notification
+  notify:
+    needs: [backend-ci, frontend-ci, build-and-push, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Notify deployment status
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      if: always()

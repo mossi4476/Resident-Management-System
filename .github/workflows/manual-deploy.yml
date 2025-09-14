@@ -1,0 +1,282 @@
+name: Manual Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      version:
+        description: 'Image version to deploy (leave empty for latest)'
+        required: false
+        type: string
+      services:
+        description: 'Services to deploy'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - backend
+          - frontend
+          - infrastructure
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 024190746294.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  # Validate inputs and get image versions
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      backend-version: ${{ steps.version.outputs.backend }}
+      frontend-version: ${{ steps.version.outputs.frontend }}
+      namespace: ${{ steps.env.outputs.namespace }}
+    
+    steps:
+    - name: Set environment namespace
+      id: env
+      run: |
+        if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+          echo "namespace=production" >> $GITHUB_OUTPUT
+        else
+          echo "namespace=staging" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Get image versions
+      id: version
+      run: |
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          echo "backend=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          echo "frontend=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          # Get latest tags from ECR
+          echo "backend=latest" >> $GITHUB_OUTPUT
+          echo "frontend=latest" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Display deployment plan
+      run: |
+        echo "🚀 Deployment Plan:"
+        echo "Environment: ${{ github.event.inputs.environment }}"
+        echo "Namespace: ${{ steps.env.outputs.namespace }}"
+        echo "Services: ${{ github.event.inputs.services }}"
+        echo "Backend Version: ${{ steps.version.outputs.backend }}"
+        echo "Frontend Version: ${{ steps.version.outputs.frontend }}"
+
+  # Deploy Infrastructure
+  deploy-infrastructure:
+    needs: prepare
+    runs-on: ubuntu-latest
+    if: github.event.inputs.services == 'all' || github.event.inputs.services == 'infrastructure'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace ${{ needs.prepare.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy Redis
+      run: |
+        kubectl apply -f k8s/redis.yaml -n ${{ needs.prepare.outputs.namespace }}
+
+    - name: Deploy Kafka
+      run: |
+        kubectl apply -f k8s/kafka.yaml -n ${{ needs.prepare.outputs.namespace }}
+
+    - name: Wait for infrastructure to be ready
+      run: |
+        kubectl wait --for=condition=ready pod -l app=redis -n ${{ needs.prepare.outputs.namespace }} --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=kafka -n ${{ needs.prepare.outputs.namespace }} --timeout=300s
+
+  # Deploy Backend
+  deploy-backend:
+    needs: [prepare, deploy-infrastructure]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.services == 'all' || github.event.inputs.services == 'backend'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Update backend image tag
+      run: |
+        # Create a temporary backend manifest with updated image tag
+        sed "s|image: $ECR_REGISTRY/resident-backend:.*|image: $ECR_REGISTRY/resident-backend:${{ needs.prepare.outputs.backend-version }}|g" \
+            k8s/backend.yaml > k8s/backend-temp.yaml
+
+    - name: Deploy backend secrets
+      run: |
+        # Create secrets for the target environment
+        kubectl create secret generic backend-secrets \
+          --from-literal=DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+          --from-literal=JWT_SECRET="${{ secrets.JWT_SECRET }}" \
+          -n ${{ needs.prepare.outputs.namespace }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy Backend
+      run: |
+        kubectl apply -f k8s/backend-temp.yaml -n ${{ needs.prepare.outputs.namespace }}
+
+    - name: Wait for backend to be ready
+      run: |
+        kubectl wait --for=condition=available deployment/backend -n ${{ needs.prepare.outputs.namespace }} --timeout=300s
+
+    - name: Run database migrations
+      run: |
+        kubectl run backend-migration --image=$ECR_REGISTRY/resident-backend:${{ needs.prepare.outputs.backend-version }} \
+          --restart=Never \
+          --env="DATABASE_URL=${{ secrets.DATABASE_URL }}" \
+          --command -- npx prisma migrate deploy \
+          -n ${{ needs.prepare.outputs.namespace }}
+        
+        kubectl wait --for=condition=complete job/backend-migration -n ${{ needs.prepare.outputs.namespace }} --timeout=300s
+        kubectl delete job backend-migration -n ${{ needs.prepare.outputs.namespace }}
+
+  # Deploy Frontend
+  deploy-frontend:
+    needs: [prepare, deploy-backend]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.services == 'all' || github.event.inputs.services == 'frontend'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Update frontend image tag
+      run: |
+        # Create a temporary frontend manifest with updated image tag
+        sed "s|image: $ECR_REGISTRY/resident-frontend:.*|image: $ECR_REGISTRY/resident-frontend:${{ needs.prepare.outputs.frontend-version }}|g" \
+            k8s/frontend.yaml > k8s/frontend-temp.yaml
+
+    - name: Deploy Frontend
+      run: |
+        kubectl apply -f k8s/frontend-temp.yaml -n ${{ needs.prepare.outputs.namespace }}
+
+    - name: Wait for frontend to be ready
+      run: |
+        kubectl wait --for=condition=available deployment/frontend -n ${{ needs.prepare.outputs.namespace }} --timeout=300s
+
+  # Health Check
+  health-check:
+    needs: [deploy-backend, deploy-frontend]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Get service URLs
+      id: urls
+      run: |
+        # Get LoadBalancer URLs
+        BACKEND_URL=$(kubectl get svc backend -n ${{ needs.prepare.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        FRONTEND_URL=$(kubectl get svc frontend -n ${{ needs.prepare.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        if [ -z "$BACKEND_URL" ]; then
+          BACKEND_URL=$(kubectl get svc backend -n ${{ needs.prepare.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        fi
+        
+        if [ -z "$FRONTEND_URL" ]; then
+          FRONTEND_URL=$(kubectl get svc frontend -n ${{ needs.prepare.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        fi
+        
+        echo "backend-url=http://$BACKEND_URL:3001" >> $GITHUB_OUTPUT
+        echo "frontend-url=http://$FRONTEND_URL:80" >> $GITHUB_OUTPUT
+
+    - name: Run health checks
+      run: |
+        echo "🔍 Running health checks..."
+        
+        # Backend health check
+        if [ -n "${{ steps.urls.outputs.backend-url }}" ]; then
+          echo "Testing backend: ${{ steps.urls.outputs.backend-url }}/health"
+          curl -f "${{ steps.urls.outputs.backend-url }}/health" || echo "Backend health check failed"
+        fi
+        
+        # Frontend health check
+        if [ -n "${{ steps.urls.outputs.frontend-url }}" ]; then
+          echo "Testing frontend: ${{ steps.urls.outputs.frontend-url }}"
+          curl -f "${{ steps.urls.outputs.frontend-url }}" || echo "Frontend health check failed"
+        fi
+
+    - name: Display deployment summary
+      run: |
+        echo "## 🎉 Deployment Summary"
+        echo ""
+        echo "**Environment:** ${{ github.event.inputs.environment }}"
+        echo "**Namespace:** ${{ needs.prepare.outputs.namespace }}"
+        echo "**Backend Version:** ${{ needs.prepare.outputs.backend-version }}"
+        echo "**Frontend Version:** ${{ needs.prepare.outputs.frontend-version }}"
+        echo ""
+        echo "**Service URLs:**"
+        echo "- Backend: ${{ steps.urls.outputs.backend-url }}"
+        echo "- Frontend: ${{ steps.urls.outputs.frontend-url }}"
+        echo ""
+        echo "**Deployment Status:**"
+        echo "- Backend: ${{ needs.deploy-backend.result }}"
+        echo "- Frontend: ${{ needs.deploy-frontend.result }}"
+
+  # Cleanup temporary files
+  cleanup:
+    needs: [health-check]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Cleanup temporary manifests
+      run: |
+        rm -f k8s/backend-temp.yaml k8s/frontend-temp.yaml

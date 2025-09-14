@@ -1,0 +1,192 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: application-controller
+    app.kubernetes.io/name: argocd-application-controller
+    app.kubernetes.io/part-of: argocd
+  name: argocd-application-controller
+  namespace: argocd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: dex-server
+    app.kubernetes.io/name: argocd-dex-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-dex-server
+  namespace: argocd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: redis
+    app.kubernetes.io/name: argocd-redis
+    app.kubernetes.io/part-of: argocd
+  name: argocd-redis
+  namespace: argocd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: repo-server
+    app.kubernetes.io/name: argocd-repo-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-repo-server
+  namespace: argocd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-cmd-params-cm
+    app.kubernetes.io/part-of: argocd
+  name: argocd-cmd-params-cm
+  namespace: argocd
+data:
+  server.insecure: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-cm
+    app.kubernetes.io/part-of: argocd
+  name: argocd-cm
+  namespace: argocd
+data:
+  application.instanceLabelKey: argocd.argoproj.io/instance
+  server.rbac.log.enforce.enable: "false"
+  url: http://localhost:8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/name: argocd-server
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-server
+  namespace: argocd
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: argocd-server
+    spec:
+      containers:
+      - command:
+        - argocd-server
+        env:
+        - name: ARGOCD_SERVER_INSECURE
+          valueFrom:
+            configMapKeyRef:
+              key: server.insecure
+              name: argocd-cmd-params-cm
+              optional: true
+        image: quay.io/argoproj/argocd:v2.8.4
+        imagePullPolicy: Always
+        name: argocd-server
+        ports:
+        - containerPort: 8080
+        - containerPort: 8083
+        readinessProbe:
+          httpGet:
+            path: /healthz?full=true
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - mountPath: /app/config/ssh
+          name: ssh-known-hosts
+        - mountPath: /app/config/tls
+          name: tls-certs
+        - mountPath: /app/config/gpg/source
+          name: gpg-keys
+        - mountPath: /app/config/gpg/keys
+          name: gpg-keyring
+      volumes:
+      - name: ssh-known-hosts
+        secret:
+          defaultMode: 420
+          secretName: argocd-ssh-known-hosts-cm
+      - name: tls-certs
+        secret:
+          defaultMode: 420
+          secretName: argocd-tls-certs-cm
+      - name: gpg-keys
+        secret:
+          defaultMode: 420
+          secretName: argocd-gpg-keys-cm
+      - name: gpg-keyring
+        emptyDir: {}
+      serviceAccountName: argocd-server
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/component: application-controller
+    app.kubernetes.io/name: argocd-application-controller
+    app.kubernetes.io/part-of: argocd
+  name: argocd-application-controller
+  namespace: argocd
+type: Opaque
+data:
+  admin.password: JDJhJDEwJEVCNmdaNEg2ci5QakV3d3FZQ3JvV2F5b2d1a2VqeVh0QWJ5eW5zUGhIcWR6cWx4b1d6
+  admin.passwordMtime: MjAyNC0xMi0xOVQxMTozMDowMFo=
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+  name: argocd-secret
+  namespace: argocd
+type: Opaque
+data:
+  admin.password: JDJhJDEwJEVCNmdaNEg2ci5QakV3d3FZQ3JvV2F5b2d1a2VqeVh0QWJ5eW5zUGhIcWR6cWx4b1d6
+  admin.passwordMtime: MjAyNC0xMi0xOVQxMTozMDowMFo=

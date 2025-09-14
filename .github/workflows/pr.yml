@@ -1,0 +1,192 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'k8s/**'
+      - '.github/workflows/**'
+
+env:
+  BACKEND_DIR: ./backend
+  FRONTEND_DIR: ./frontend
+
+jobs:
+  # Code Quality Checks
+  code-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    # Backend checks
+    - name: Install Backend dependencies
+      working-directory: ${{ env.BACKEND_DIR }}
+      run: npm ci
+
+    - name: Run Backend linting
+      working-directory: ${{ env.BACKEND_DIR }}
+      run: npm run lint
+
+    - name: Run Backend tests
+      working-directory: ${{ env.BACKEND_DIR }}
+      run: npm run test
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/test
+        JWT_SECRET: test-secret
+
+    - name: Backend build check
+      working-directory: ${{ env.BACKEND_DIR }}
+      run: npm run build
+
+    # Frontend checks
+    - name: Install Frontend dependencies
+      working-directory: ${{ env.FRONTEND_DIR }}
+      run: npm ci
+
+    - name: Run Frontend linting
+      working-directory: ${{ env.FRONTEND_DIR }}
+      run: npm run lint
+
+    - name: Frontend build check
+      working-directory: ${{ env.FRONTEND_DIR }}
+      run: npm run build
+      env:
+        NEXT_PUBLIC_API_URL: http://localhost:3001
+
+  # Kubernetes manifest validation
+  k8s-validation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Validate Kubernetes manifests
+      run: |
+        for file in k8s/*.yaml; do
+          echo "Validating $file..."
+          kubectl apply --dry-run=client -f "$file"
+        done
+
+  # Security checks
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy filesystem scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-fs-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-fs-results.sarif'
+
+  # Docker build test (without pushing)
+  docker-build-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Test Backend Docker build
+      run: |
+        docker build -t backend-test ./backend
+        docker run --rm backend-test npm run test
+
+    - name: Test Frontend Docker build
+      run: |
+        docker build -t frontend-test --build-arg NEXT_PUBLIC_API_URL=http://localhost:3001 ./frontend
+
+  # Comment PR with results
+  pr-comment:
+    needs: [code-quality, k8s-validation, security, docker-build-test]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Comment PR
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          
+          const botComment = comments.find(comment => 
+            comment.user.type === 'Bot' && comment.body.includes('## CI/CD Status')
+          );
+          
+          const status = {
+            'code-quality': '${{ needs.code-quality.result }}',
+            'k8s-validation': '${{ needs.k8s-validation.result }}',
+            'security': '${{ needs.security.result }}',
+            'docker-build-test': '${{ needs.docker-build-test.result }}'
+          };
+          
+          const statusEmoji = (status) => {
+            switch(status) {
+              case 'success': return '✅';
+              case 'failure': return '❌';
+              case 'cancelled': return '⏹️';
+              default: return '⏳';
+            }
+          };
+          
+          const body = `## CI/CD Status
+          
+          | Check | Status |
+          |-------|--------|
+          | Code Quality | ${statusEmoji(status['code-quality'])} ${status['code-quality']} |
+          | K8s Validation | ${statusEmoji(status['k8s-validation'])} ${status['k8s-validation']} |
+          | Security Scan | ${statusEmoji(status['security'])} ${status['security']} |
+          | Docker Build | ${statusEmoji(status['docker-build-test'])} ${status['docker-build-test']} |
+          
+          ${Object.values(status).some(s => s === 'failure') ? 
+            '❌ Some checks failed. Please review the logs.' : 
+            '✅ All checks passed!'}
+          `;
+          
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: botComment.id,
+              body: body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+          }
