@@ -1,8 +1,9 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request, Res } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { ResidentsService } from './residents.service';
 import { CreateResidentDto, UpdateResidentDto } from './dto/resident.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Response } from 'express';
 
 @ApiTags('Residents')
 @ApiBearerAuth()
@@ -23,6 +24,17 @@ export class ResidentsController {
   @ApiResponse({ status: 200, description: 'Residents retrieved successfully' })
   findAll() {
     return this.residentsService.findAll();
+  }
+
+  @Get('export/csv')
+  @ApiOperation({ summary: 'Export residents as CSV' })
+  @ApiResponse({ status: 200, description: 'CSV exported successfully' })
+  async exportCsv(@Res() res: Response) {
+    const csv = await this.residentsService.exportResidentsCsv();
+    const bom = '\uFEFF';
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="residents.csv"');
+    res.send(bom + csv);
   }
 
   @Get('stats')

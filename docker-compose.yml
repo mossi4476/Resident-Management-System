@@ -51,15 +51,62 @@ services:
       timeout: 10s
       retries: 3
 
+  # MySQL for Prisma datasource
+  mysql:
+    image: mysql:8.0
+    container_name: rmsa-mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  # MinIO for object storage (attachments)
+  minio:
+    image: minio/minio:latest
+    container_name: rmsa-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Console UI
+    volumes:
+      - minio_data:/data
+
+  # MailHog for local SMTP testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: rmsa-mailhog
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+
   backend:
     build:
       context: ./backend
     container_name: rmsa-backend
     depends_on:
+      mysql:
+        condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      minio:
+        condition: service_started
+      mailhog:
+        condition: service_started
     env_file:
       - compose.env
     environment:
@@ -67,10 +114,20 @@ services:
       - PORT=3001
       - DATABASE_URL=${DATABASE_URL}
       - FRONTEND_URL=http://localhost:3000
-      - AWS_REGION=${AWS_REGION}
-      - AWS_PROFILE=${AWS_PROFILE}
       - REDIS_URL=redis://redis:6379
       - KAFKA_BROKER=kafka:9092
+      # Storage (MinIO)
+      - STORAGE_PROVIDER=minio
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      # Email (MailHog SMTP)
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - EMAIL_FROM=${EMAIL_FROM}
     ports:
       - "3001:3001"
     command: sh -c "npx prisma migrate deploy && npm run start:prod"
@@ -92,6 +149,8 @@ volumes:
   zookeeper_data:
   zookeeper_logs:
   kafka_data:
+  mysql_data:
+  minio_data:
 
 
 

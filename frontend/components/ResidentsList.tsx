@@ -26,7 +26,7 @@ export default function ResidentsList({ residents, onUpdate, userRole, currentUs
   const [buildingFilter, setBuildingFilter] = useState('')
   const [ownerFilter, setOwnerFilter] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
-  const [itemsPerPage] = useState(10)
+  const [itemsPerPage] = useState(5)
 
   const handleDelete = async (id: string) => {
     try {
@@ -48,6 +48,23 @@ export default function ResidentsList({ residents, onUpdate, userRole, currentUs
       await handleDelete(residentToDelete.id)
       setShowDeleteModal(false)
       setResidentToDelete(null)
+    }
+  }
+
+  const handleExportCsv = async () => {
+    try {
+      const res = await residentsApi.exportCsv()
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.setAttribute('download', `residents_${new Date().toISOString().slice(0,10)}.csv`)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+      toast.success('Exported residents CSV')
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Failed to export CSV')
     }
   }
 
@@ -122,7 +139,7 @@ export default function ResidentsList({ residents, onUpdate, userRole, currentUs
           </div>
 
           {/* Filters */}
-          <div className="flex flex-wrap gap-4">
+          <div className="flex flex-wrap gap-4 items-center">
             <select
               value={buildingFilter}
               onChange={(e) => setBuildingFilter(e.target.value)}
@@ -149,6 +166,13 @@ export default function ResidentsList({ residents, onUpdate, userRole, currentUs
               className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50"
             >
               Clear Filters
+            </button>
+
+            <button
+              onClick={handleExportCsv}
+              className="ml-auto px-4 py-2 text-sm text-white bg-primary-600 hover:bg-primary-700 rounded-lg"
+            >
+              Export CSV
             </button>
           </div>
         </div>

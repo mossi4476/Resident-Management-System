@@ -26,13 +26,76 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
   const [showEditModal, setShowEditModal] = useState(false)
   const [complaintToEdit, setComplaintToEdit] = useState<any>(null)
   
+  // Inline attachments state
+  const [uploadingId, setUploadingId] = useState<string | null>(null)
+  const [openAttachmentsId, setOpenAttachmentsId] = useState<string | null>(null)
+  const [attachmentsByComplaint, setAttachmentsByComplaint] = useState<Record<string, any[]>>({})
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [uploading, setUploading] = useState<boolean>(false)
+ 
+  const downloadFile = async (url: string, fileName: string) => {
+    try {
+      const res = await fetch(url, { credentials: 'include' })
+      const blob = await res.blob()
+      const link = document.createElement('a')
+      link.href = window.URL.createObjectURL(blob)
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(link.href)
+    } catch {
+      window.open(url, '_blank')
+    }
+  }
+
+  const triggerFilePicker = (complaintId: string) => {
+    const input = document.getElementById(`file-${complaintId}`) as HTMLInputElement | null
+    input?.click()
+  }
+
+  const onInlineFileChange = async (complaintId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingId(complaintId)
+    try {
+      await complaintsApi.uploadAttachment(complaintId, file)
+      toast.success('Attachment uploaded')
+      // refresh list for this complaint if opened
+      if (openAttachmentsId === complaintId) {
+        const res = await complaintsApi.listAttachments(complaintId)
+        setAttachmentsByComplaint(prev => ({ ...prev, [complaintId]: res.data || [] }))
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Upload failed')
+    } finally {
+      setUploadingId(null)
+      // reset input value to allow same file re-select
+      e.target.value = ''
+    }
+  }
+
+  const toggleAttachments = async (complaintId: string) => {
+    if (openAttachmentsId === complaintId) {
+      setOpenAttachmentsId(null)
+      return
+    }
+    try {
+      const res = await complaintsApi.listAttachments(complaintId)
+      setAttachmentsByComplaint(prev => ({ ...prev, [complaintId]: res.data || [] }))
+      setOpenAttachmentsId(complaintId)
+    } catch (e) {
+      toast.error('Failed to load attachments')
+    }
+  }
+
   // Search and filter states
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [priorityFilter, setPriorityFilter] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
-  const [itemsPerPage] = useState(10)
+  const [itemsPerPage] = useState(5)
 
   const getStatusBadge = (status: string) => {
     const statusClasses: { [key: string]: string } = {
@@ -119,6 +182,49 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
   useEffect(() => {
     setLocalComplaints(complaints)
   }, [complaints])
+
+  // Load attachments when a complaint is selected
+  useEffect(() => {
+    const load = async () => {
+      if (!selectedComplaint) return setAttachmentsByComplaint({})
+      try {
+        const res = await complaintsApi.listAttachments(selectedComplaint.id)
+        setAttachmentsByComplaint({ [selectedComplaint.id]: res.data || [] })
+      } catch (e) {
+        setAttachmentsByComplaint({})
+      }
+    }
+    load()
+  }, [selectedComplaint])
+
+  const handleUpload = async () => {
+    if (!selectedComplaint || !selectedFile) return
+    setUploading(true)
+    try {
+      await complaintsApi.uploadAttachment(selectedComplaint.id, selectedFile)
+      setSelectedFile(null)
+      const res = await complaintsApi.listAttachments(selectedComplaint.id)
+      setAttachmentsByComplaint({ [selectedComplaint.id]: res.data || [] })
+      toast.success('Attachment uploaded')
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDeleteAttachment = async (attachmentId: string) => {
+    if (!selectedComplaint) return
+    try {
+      await complaintsApi.deleteAttachment(selectedComplaint.id, attachmentId)
+      setAttachmentsByComplaint(prev => ({
+        [selectedComplaint.id]: (prev[selectedComplaint.id] || []).filter((a: any) => a.id !== attachmentId),
+      }))
+      toast.success('Attachment deleted')
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Delete failed')
+    }
+  }
 
   // WebSocket event handlers
   useEffect(() => {
@@ -295,6 +401,23 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
                         <span className={`badge ${getPriorityBadge(complaint.priority)}`}>
                           {complaint.priority}
                         </span>
+                        {/* Inline upload & attachments actions */}
+                        <input id={`file-${complaint.id}`} type="file" className="hidden" onChange={(e) => onInlineFileChange(complaint.id, e)} />
+                        <button
+                          onClick={() => triggerFilePicker(complaint.id)}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                          disabled={uploadingId === complaint.id}
+                          title="Upload attachment"
+                        >
+                          {uploadingId === complaint.id ? 'Uploading...' : 'Upload'}
+                        </button>
+                        <button
+                          onClick={() => toggleAttachments(complaint.id)}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                          title="Show attachments"
+                        >
+                          {openAttachmentsId === complaint.id ? 'Hide Files' : 'Files'}
+                        </button>
                       </div>
                     </div>
                     <p className="mt-1 text-sm text-gray-500 line-clamp-2">
@@ -307,10 +430,38 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
                       <span className="mx-2">•</span>
                       <span>{format(new Date(complaint.createdAt), 'MMM dd, yyyy')}</span>
                     </div>
-                    {complaint.comments && complaint.comments.length > 0 && (
-                      <div className="mt-2 flex items-center text-xs text-gray-500">
-                        <ChatBubbleLeftIcon className="h-4 w-4 mr-1" />
-                        {complaint.comments.length} comment{complaint.comments.length !== 1 ? 's' : ''}
+                    {openAttachmentsId === complaint.id && (
+                      <div className="mt-3 bg-gray-50 rounded p-3">
+                        <div className="text-xs text-gray-600 mb-2">Attachments</div>
+                        <ul className="space-y-1">
+                          {(attachmentsByComplaint[complaint.id] || []).length === 0 && (
+                            <li className="text-sm text-gray-500">No attachments</li>
+                          )}
+                          {(attachmentsByComplaint[complaint.id] || []).map((a: any) => (
+                            <li key={a.id} className="flex items-center justify-between text-sm">
+                              <button onClick={() => downloadFile(a.url, a.fileName)} className="text-primary-600 truncate text-left">
+                                {a.fileName}
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await complaintsApi.deleteAttachment(complaint.id, a.id)
+                                    setAttachmentsByComplaint(prev => ({
+                                      ...prev,
+                                      [complaint.id]: (prev[complaint.id] || []).filter((x: any) => x.id !== a.id),
+                                    }))
+                                    toast.success('Deleted')
+                                  } catch (e: any) {
+                                    toast.error(e.response?.data?.message || 'Delete failed')
+                                  }
+                                }}
+                                className="text-red-500"
+                              >
+                                Delete
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     )}
                   </div>
@@ -513,6 +664,32 @@ export default function ComplaintsList({ complaints, onUpdate, userRole, current
                     </div>
                   </div>
                 )}
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Attachments</label>
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2">
+                      <input type="file" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
+                      <button onClick={handleUpload} disabled={!selectedFile || uploading} className="btn btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+                        {uploading ? 'Uploading...' : 'Upload'}
+                      </button>
+                    </div>
+                    <ul className="mt-3 space-y-2 max-h-40 overflow-y-auto">
+                      {(!selectedComplaint || (attachmentsByComplaint[selectedComplaint.id] || []).length === 0) && <li className="text-sm text-gray-500">No attachments</li>}
+                      {(selectedComplaint ? (attachmentsByComplaint[selectedComplaint.id] || []) : []).map((a: any) => (
+                        <li key={a.id} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                          <div className="text-sm text-gray-700 truncate">{a.fileName} <span className="text-xs text-gray-400">({Math.round((a.fileSize || 0)/1024)} KB)</span></div>
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => downloadFile(a.url, a.fileName)} className="text-primary-600 text-sm">Download</button>
+                            {(userRole === 'ADMIN' || (userRole === 'RESIDENT' && selectedComplaint?.authorId === currentUserId)) && (
+                              <button onClick={() => handleDeleteAttachment(a.id)} className="text-red-500 text-sm">Delete</button>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
               </div>
               
               <div className="mt-6 flex justify-end space-x-3">

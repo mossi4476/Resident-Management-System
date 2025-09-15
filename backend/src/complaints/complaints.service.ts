@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { KafkaService } from '../kafka/kafka.service';
 import { CreateComplaintDto, UpdateComplaintDto } from './dto/complaint.dto';
+import { StorageService } from '../storage/storage.service';
 
 @Injectable()
 export class ComplaintsService {
@@ -10,6 +11,7 @@ export class ComplaintsService {
     private prisma: PrismaService,
     private redisService: RedisService,
     private kafkaService: KafkaService,
+    private storageService: StorageService,
   ) {}
 
   async create(createComplaintDto: CreateComplaintDto, userId: string) {
@@ -320,6 +322,64 @@ export class ComplaintsService {
         },
       },
     });
+  }
+
+  async uploadAttachment(complaintId: string, file: Express.Multer.File, userId: string) {
+    if (!file) throw new BadRequestException('File is required');
+    const complaint = await this.findOne(complaintId);
+
+    // Only author or admin/manager allowed to upload attachments
+    // If needed, enforce role check outside based on req.user
+
+    const objectName = `${complaintId}/${Date.now()}_${file.originalname}`;
+    await this.storageService.uploadObject(objectName, file.buffer, file.mimetype);
+
+    const saved = await this.prisma.complaintAttachment.create({
+      data: {
+        complaintId: complaint.id,
+        fileName: file.originalname,
+        filePath: objectName,
+        fileSize: file.size,
+        mimeType: file.mimetype,
+      },
+    });
+
+    return saved;
+  }
+
+  async listAttachments(complaintId: string) {
+    await this.findOne(complaintId);
+    const items = await this.prisma.complaintAttachment.findMany({
+      where: { complaintId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // For local storage, expose a simple download route path
+    const withUrls = items.map((a) => ({
+      ...a,
+      url: `/complaints/${complaintId}/attachments/${a.id}/download`,
+    }));
+
+    return withUrls;
+  }
+
+  async deleteAttachment(complaintId: string, attachmentId: string, userId: string, userRole: string) {
+    const complaint = await this.findOne(complaintId);
+
+    // Only author or admin allowed to delete
+    if (userRole === 'RESIDENT' && complaint.authorId !== userId) {
+      throw new ForbiddenException('You can only manage your own complaint attachments');
+    }
+
+    const attachment = await this.prisma.complaintAttachment.findUnique({ where: { id: attachmentId } });
+    if (!attachment || attachment.complaintId !== complaintId) {
+      throw new NotFoundException('Attachment not found');
+    }
+
+    await this.storageService.removeObject(attachment.filePath);
+    await this.prisma.complaintAttachment.delete({ where: { id: attachmentId } });
+
+    return { success: true };
   }
 
   async getComplaintStats() {

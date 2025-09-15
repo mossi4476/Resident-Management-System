@@ -45,6 +45,7 @@ export const residentsApi = {
   update: (id: string, data: any) => api.patch(`/residents/${id}`, data),
   delete: (id: string) => api.delete(`/residents/${id}`),
   getStats: () => api.get('/residents/stats'),
+  exportCsv: () => api.get('/residents/export/csv', { responseType: 'blob' }),
 }
 
 export const complaintsApi = {
@@ -56,6 +57,15 @@ export const complaintsApi = {
   delete: (id: string) => api.delete(`/complaints/${id}`),
   addComment: (id: string, content: string) => api.post(`/complaints/${id}/comments`, { content }),
   getStats: () => api.get('/complaints/stats'),
+  listAttachments: (id: string) => api.get(`/complaints/${id}/attachments`),
+  uploadAttachment: (id: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post(`/complaints/${id}/attachments`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  deleteAttachment: (id: string, attachmentId: string) => api.delete(`/complaints/${id}/attachments/${attachmentId}`),
 }
 
 export const notificationsApi = {
@@ -67,4 +77,4 @@ export const notificationsApi = {
   delete: (id: string) => api.delete(`/notifications/${id}`),
 }
 
-export default api
+export { api as default }

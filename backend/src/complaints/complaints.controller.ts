@@ -1,8 +1,10 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request, Query } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request, Query, UseInterceptors, UploadedFile, Res } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
 import { ComplaintsService } from './complaints.service';
 import { CreateComplaintDto, UpdateComplaintDto } from './dto/complaint.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
 
 @ApiTags('Complaints')
 @ApiBearerAuth()
@@ -65,6 +67,45 @@ export class ComplaintsController {
   @ApiResponse({ status: 201, description: 'Comment added successfully' })
   addComment(@Param('id') id: string, @Body('content') content: string, @Request() req) {
     return this.complaintsService.addComment(id, content, req.user.userId);
+  }
+
+  @Post(':id/attachments')
+  @ApiOperation({ summary: 'Upload attachment for complaint' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file'))
+  uploadAttachment(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Request() req,
+  ) {
+    return this.complaintsService.uploadAttachment(id, file, req.user.userId);
+  }
+
+  @Get(':id/attachments')
+  @ApiOperation({ summary: 'List attachments for complaint' })
+  listAttachments(@Param('id') id: string) {
+    return this.complaintsService.listAttachments(id);
+  }
+
+  @Get(':id/attachments/:attachmentId/download')
+  @ApiOperation({ summary: 'Download complaint attachment' })
+  async downloadAttachment(@Param('id') id: string, @Param('attachmentId') attachmentId: string, @Res() res: Response) {
+    const attachment = await this.complaintsService.findOne(id).then(() =>
+      this.complaintsService['prisma'].complaintAttachment.findUnique({ where: { id: attachmentId } })
+    );
+    if (!attachment || attachment.complaintId !== id) {
+      return res.status(404).send({ message: 'Attachment not found' });
+    }
+    const stream = this.complaintsService['storageService'].getReadStream(attachment.filePath);
+    res.setHeader('Content-Type', attachment.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${attachment.fileName}"`);
+    stream.pipe(res);
+  }
+
+  @Delete(':id/attachments/:attachmentId')
+  @ApiOperation({ summary: 'Delete complaint attachment' })
+  deleteAttachment(@Param('id') id: string, @Param('attachmentId') attachmentId: string, @Request() req) {
+    return this.complaintsService.deleteAttachment(id, attachmentId, req.user.userId, req.user.role);
   }
 
   @Delete(':id')

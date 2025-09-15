@@ -74,7 +74,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header user={user} onLogout={logout} />
+      <Header user={user} onLogout={logout} onNotificationsClick={() => setActiveTab('notifications')} />
       <div className="flex">
         <Sidebar activeTab={activeTab} onTabChange={setActiveTab} userRole={user?.role || 'RESIDENT'} />
         

@@ -7,8 +7,9 @@ export class ResidentsService {
   constructor(private prisma: PrismaService) {}
 
   async create(createResidentDto: CreateResidentDto, userId: string) {
-    return this.prisma.resident.create({
-      data: {
+    return this.prisma.resident.upsert({
+      where: { userId },
+      create: {
         firstName: createResidentDto.firstName,
         lastName: createResidentDto.lastName,
         phone: createResidentDto.phone,
@@ -18,6 +19,16 @@ export class ResidentsService {
         moveInDate: new Date(createResidentDto.moveInDate),
         isOwner: createResidentDto.isOwner,
         userId,
+      },
+      update: {
+        firstName: createResidentDto.firstName,
+        lastName: createResidentDto.lastName,
+        phone: createResidentDto.phone,
+        apartment: createResidentDto.apartment,
+        floor: createResidentDto.floor,
+        building: createResidentDto.building,
+        moveInDate: new Date(createResidentDto.moveInDate),
+        isOwner: createResidentDto.isOwner,
       },
       include: {
         user: {
@@ -50,6 +61,50 @@ export class ResidentsService {
         },
       },
     });
+  }
+
+  async exportResidentsCsv(): Promise<string> {
+    const residents = await this.prisma.resident.findMany({
+      include: {
+        user: {
+          select: { email: true, role: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const headers = [
+      'First Name',
+      'Last Name',
+      'Phone',
+      'Apartment',
+      'Floor',
+      'Building',
+      'Move In Date',
+      'Is Owner',
+      'Email',
+      'Role',
+    ];
+
+    const lines = residents.map((r) => [
+      r.firstName,
+      r.lastName,
+      r.phone,
+      r.apartment,
+      String(r.floor),
+      r.building,
+      r.moveInDate.toISOString(),
+      r.isOwner ? 'Yes' : 'No',
+      r.user?.email || '',
+      r.user?.role || '',
+    ].map((v) => {
+      const s = v ?? '';
+      // CSV escape
+      if (/[",\n]/.test(s)) return '"' + String(s).replace(/"/g, '""') + '"';
+      return String(s);
+    }).join(','));
+
+    return [headers.join(','), ...lines].join('\n');
   }
 
   async findOne(id: string) {

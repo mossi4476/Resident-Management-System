@@ -2,15 +2,15 @@
 
 import { useState } from 'react'
 import { BellIcon, UserCircleIcon } from '@heroicons/react/24/outline'
-import { notificationsApi } from '@/lib/api'
 import toast from 'react-hot-toast'
 
 interface HeaderProps {
   user: any
   onLogout: () => void
+  onNotificationsClick?: () => void
 }
 
-export default function Header({ user, onLogout }: HeaderProps) {
+export default function Header({ user, onLogout, onNotificationsClick }: HeaderProps) {
   const [showNotifications, setShowNotifications] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
 
@@ -45,7 +45,13 @@ export default function Header({ user, onLogout }: HeaderProps) {
           <div className="flex items-center space-x-4">
             <div className="relative">
               <button
-                onClick={() => setShowNotifications(!showNotifications)}
+                onClick={() => {
+                  if (onNotificationsClick) {
+                    onNotificationsClick()
+                  } else {
+                    setShowNotifications(!showNotifications)
+                  }
+                }}
                 className="p-2 text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded-full"
               >
                 <BellIcon className="h-6 w-6" />
